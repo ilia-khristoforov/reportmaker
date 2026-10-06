@@ -1,172 +1,154 @@
-# VRFB Cycling Data Analysis Tool
+# Flow Battery Report Maker
 
-This project provides a suite of Python scripts for parsing, processing, and visualizing experimental data obtained from Vanadium Redox Flow Battery (VRFB) cycling experiments. It supports data from YARST and ES8 potentiostats, performs efficiency and OCV calculations, and includes functionality for image processing of webcam frames to measure electrolyte levels.
+Processing and plotting tools for **redox flow battery cycling experiments**, developed by the FlowBat team at Skoltech for vanadium RFBs (VRFBs), but chemistry-agnostic in the parts that matter.
 
-## Table of Contents
+You give it a folder of raw potentiostat files plus a short `config.json`. It returns:
 
-- [VRFB Cycling Data Analysis Tool](#vrfb-cycling-data-analysis-tool)
-  - [Table of Contents](#table-of-contents)
-  - [Project Description](#project-description)
-  - [Installation](#installation)
-  - [Configuration (`config.json`)](#configuration-configjson)
-  - [Usage](#usage)
-    - [Parsing Raw Data](#parsing-raw-data)
-    - [Post-Processing and Visualization](#post-processing-and-visualization)
-    - [Image Processing for Volume Measurement](#image-processing-for-volume-measurement)
-  - [Codebase Overview](#codebase-overview)
+- per-step capacity, average voltage and energy, and the rest-period OCV
+- per-cycle coulombic, voltage and energy efficiency, and electrolyte utilisation
+- charge–discharge curves vs. SoC, efficiency-vs-cycle and OCV-vs-cycle plots
+- optionally, data from extra sensors (a webcam for tank levels, a color sensor, a separate OCV cell) aligned onto the same time axis
 
-## Project Description
+## Install
 
-The primary goal of this tool is to streamline the analysis of VRFB experimental data. It automates several steps:
-*   **Raw Data Parsing**: Converts raw potentiostat output (YARST and ES8 formats) into a standardized, parsed format (`cycles.txt`).
-*   **Data Processing**: Calculates key performance metrics such as coulombic, voltage, and energy efficiencies, and extracts open-circuit voltage (OCV) measurements.
-*   **Visualization**: Generates plots for efficiencies, OCV trends, and charge-discharge curves for selected cycles.
-*   **Image Analysis**: Processes webcam images to determine electrolyte volumes based on liquid column heights.
+Requires Python 3.10+.
 
-## Installation
-
-To set up the project, follow these steps:
-
-1.  **Clone the repository (if applicable) or download the files.**
-2.  **Navigate to the project root directory:**
-    ```bash
-    cd /path/to/report_maker
-    ```
-3.  **Create a virtual environment (recommended):**
-    ```bash
-    python -m venv venv
-    ```
-4.  **Activate the virtual environment:**
-    *   **Windows:**
-        ```bash
-        .\venv\Scripts\activate
-        ```
-    *   **macOS/Linux:**
-        ```bash
-        source venv/bin/activate
-        ```
-5.  **Install the required Python packages:**
-    You will need to install `pandas`, `matplotlib`, `numpy`, and `opencv-python`. A `requirements.txt` file is not currently provided, so you can install them manually:
-    ```bash
-    pip install pandas matplotlib numpy opencv-python
-    ```
-
-## Configuration (`config.json`)
-
-Each experiment folder (e.g., `mmk_2c`, `MMK_ST_ProjEltest21`) should contain a `config.json` file. This file specifies essential parameters for the electrolyte, such as concentration and volume, which are used in calculations.
-
-Example `config.json`:
-
-```json
-{
-  "electrolyte": {
-    "concentration_M": 1.5,
-    "volume_ml": 50.0
-  },
-  "image_processing_rois": {
-    "catholyte": {
-      "angle": -3.90,
-      "thresholds": [40, 220],
-      "roi": [185, 538, 257, 278]
-    },
-    "anolyte": {
-      "angle": -7.20,
-      "thresholds": [40, 100],
-      "roi": [196, 581, 359, 382]
-    }
-  }
-}
+```bash
+git clone <this repo>
+cd report_maker
+python -m venv .venv
+.venv/Scripts/activate          # Windows;  source .venv/bin/activate on Linux/macOS
+pip install -r requirements.txt
 ```
 
-*   `electrolyte.concentration_M`: Molar concentration of the electrolyte.
-*   `electrolyte.volume_ml`: Volume of the electrolyte in milliliters.
-*   `image_processing_rois`: (Optional) Configuration for image processing. Each key (e.g., `catholyte`, `anolyte`) represents a Region of Interest (ROI) and contains:
-    *   `angle`: Rotation angle for the image.
-    *   `thresholds`: Tuple `(min_threshold, max_threshold)` for binary thresholding.
-    *   `roi`: Tuple `(x1, x2, y1, y2)` defining the rectangular region of interest in pixels.
+## Quick start
 
-## Usage
+**GUI.** Run `python main_gui.py`, pick the folder that contains your experiments, select one, and work through the numbered steps. Each step shows whether its inputs and outputs already exist.
 
-The tool is designed to be used in conjunction with experiment-specific folders. Each folder typically follows a structure like this:
+**Script.** This does the same core work without a GUI:
+
+```bash
+python -m examples.run_pipeline path/to/my_experiment
+```
+
+[examples/run_pipeline.py](examples/run_pipeline.py) is about 50 lines long. It's the best place to see how the library pieces fit together.
+
+## Experiment folder
+
+Each experiment is one self-contained folder. You only create `config.json` and `01_Raw_data/`; everything else is generated.
 
 ```
-<experiment_name>/
+my_experiment/
+├── config.json
 ├── 01_Raw_data/
-│   ├── color/
-│   ├── OCV/
-│   └── potentiostat/
-│       └── <raw_data_files> (e.g., potentiostat.txt, MMK_ST_ProjEltest21-00000001.txt)
-├── 02_Parsed_data/
-│   ├── color/
-│   ├── OCV/
-│   └── potentiostat/
-│       └── cycles.txt
-├── 03_Processed_data/
-│   ├── efficiencies.csv
-│   ├── ocv_measurements.csv
-│   └── step_metrics.csv
-├── 04_Results/
-│   ├── efficiencies.png
-│   └── <other_plots>.png
-└── config.json
+│   ├── potentiostat/     # raw cycling files (*.txt)          — required
+│   ├── OCV/              # separate OCV-cell logger            — optional
+│   ├── color/            # color sensor log (colors.txt)       — optional
+│   └── frames/           # webcam JPEGs, YYYYmmdd_HHMMSS.jpg   — optional
+├── 02_Parsed_data/       # cycles.csv, ocv_log.csv, aligned data
+├── 03_Processed_data/    # step_metrics.csv, ocv_measurements.csv, efficiencies.csv
+└── 04_Results/           # plots
 ```
 
-### Parsing Raw Data
+Keep experiment data **outside** this repository, or name local experiment folders `exp_*` so git ignores them.
 
-You can use either `yarst_parser.py` or `elins_parser.py` depending on your potentiostat data format.
+## `config.json`
 
-To parse data, run the respective script from the project root, providing the path to your experiment folder:
+Copy [examples/config.example.json](examples/config.example.json). Only the `electrolyte` block is used in calculations:
 
-*   **For YARST data:**
-    ```bash
-    python yarst_parser.py <experiment_folder_path>
-    ```
-    Example: `python yarst_parser.py MMK_ST_ProjEltest21`
+| Key | Required | Meaning |
+|---|---|---|
+| `electrolyte.concentration_M` | yes | Active-species concentration in the capacity-limiting electrolyte, mol/L |
+| `electrolyte.volume_ml` | yes | Volume of that electrolyte, mL |
+| `electrolyte.electrons_transferred` | no (default 1) | Electrons per active molecule, *n* |
+| `experiment_info.potentiostat` | for the GUI | Which parser to use: `Yarst` or `Elins` |
+| `plotting.voltage_limits_V` | no | Y-axis range of the charge–discharge plot, e.g. `[0.8, 1.65]`; autoscale if absent |
 
-*   **For ES8 (Elins) data:**
-    ```bash
-    python elins_parser.py <experiment_folder_path>
-    ```
-    Example: `python elins_parser.py mmk_2c`
+Everything else (cell components, flow rate, operator…) is free-form metadata.
 
-These scripts will:
-1.  Read raw data from `<experiment_folder>/01_Raw_data/potentiostat/`.
-2.  Process the data and calculate basic step metrics.
-3.  Save the parsed data to `<experiment_folder>/02_Parsed_data/potentiostat/cycles.txt`.
-4.  Save processed metrics to `<experiment_folder>/03_Processed_data/step_metrics.csv` and OCV measurements to `<experiment_folder>/03_Processed_data/ocv_measurements.csv`.
+The theoretical capacity is computed as **Q = n·F·c·V**. For vanadium, n = 1. For other chemistries, set `electrons_transferred` and use the concentration and volume of whichever side limits capacity.
 
-### Post-Processing and Visualization
+## What the numbers mean
 
-The `post_processing.py` file contains functions for calculating efficiencies and generating various plots. These functions are typically called from a notebook or another script after the raw data has been parsed and processed.
+- **Steps and cycles.** Each potentiostat step with non-zero current is labelled charge (`ch`) if its first current point is **positive**, and discharge (`dch`) otherwise. A new cycle starts at every discharge → charge transition. Zero-current steps count as rests, and their last voltage is stored as the OCV.
+- **Capacity** is recomputed from current by trapezoidal integration (instrument-reported Ah is ignored). **Average voltage** is the mean of the sampled points, so it assumes roughly uniform sampling.
+- **SoC** = |Q| / Q_theory, counted from the start of each step.
+- **Efficiencies (per cycle):**
+  - CE = Q_dch / Q_ch
+  - VE = V̄_dch / V̄_ch
+  - EE = CE · VE
+  - utilisation = Q_dch / Q_theory
 
-Key functions:
-*   `calculate_efficiencies(metrics_file: pathlib.Path) -> pd.DataFrame`: Calculates coulombic, voltage, and energy efficiencies.
-*   `plot_efficiencies(df: pd.DataFrame, output_path: pathlib.Path, title: str)`: Plots and saves efficiency data.
-*   `plot_ocv(df: pd.DataFrame, output_path: pathlib.Path, title: str)`: Plots and saves OCV data.
-*   `plot_charge_discharge_cycles(cycles_file: pathlib.Path, capacity_coulombs: float, output_path: pathlib.Path, start_cycle: int, end_cycle: int, cycle_step: int = 1, plot_legend: bool = True, plot_title: str = 'Charge-Discharge curves', current_densities: Optional[List[int]] = None, plot_colors: Optional[List[str]] = None)`: Plots charge-discharge curves for a specified range of cycles with optional stepping, custom titles, legends, and colors.
+**Output column names.** `cycles.csv` is wide-format, with one column group per cycle and step: `001_ch_t_s, 001_ch_SoC, 001_ch_U_V, 001_ch_I_A, 001_ch_Q_C, 001_dch_t_s, …`. Time restarts at 0 for every step.
 
-### Image Processing for Volume Measurement
+## Adapting it to your lab
 
-The `frames_to_volumes.py` script processes images (e.g., from a webcam) to measure liquid column heights.
+### A different potentiostat
 
-To process images, you'll typically run `process_all_images` from within another script or notebook, passing the relevant configuration:
+Supported out of the box are **YARST** and **Elins (ES8 software)**. Both export CP1251 text with Russian headers. For anything else, write a small parser (about 30 lines for a CSV export):
 
-*   `process_all_images(input_folder: pathlib.Path, output_folder: pathlib.Path, results_file: pathlib.Path, rois_: dict, saving_steps: bool = False)`: Processes all images in `input_folder`, saves processed images to a unique `output_folder`, and writes pixel heights to `results_file`. The `rois_` dictionary should come from your `config.json`.
+```python
+# core/my_parser.py
+import pathlib
+import pandas as pd
+from core.base_parser import BaseParser, ExperStep
 
-## Codebase Overview
+class MyParser(BaseParser):
+    def read_data(self, raw_dir: pathlib.Path) -> list[ExperStep]:
+        self.data = []
+        for fn in sorted(raw_dir.glob('*.csv')):
+            df = pd.read_csv(fn)
+            for (cycle, step), g in df.groupby(['cycle', 'step'], sort=False):
+                self.data.append(ExperStep(
+                    index=(cycle, step),
+                    t=(g['time_s'] - g['time_s'].iloc[0]).tolist(),   # seconds from step start
+                    U=g['voltage_V'].tolist(),
+                    I=g['current_A'].tolist(),                        # charge must be positive
+                    Q=[float('nan')] * len(g),                        # recomputed later
+                ))
+        return self.data
+```
 
-*   `base_parser.py`:
-    *   Defines the `ExperStep` dataclass for holding experimental step data.
-    *   Provides `BaseParser` (an abstract base class) with common functionalities like managing experiment folders, loading `config.json`, calculating nominal capacity, and methods for processing and writing data.
-*   `yarst_parser.py`:
-    *   Implements `YarstParser`, a subclass of `BaseParser`, specifically for parsing data from YARST potentiostat files.
-*   `elins_parser.py`:
-    *   Implements `ElinsParser`, a subclass of `BaseParser`, for parsing data from ES8 (Elins) potentiostat files.
-*   `post_processing.py`:
-    *   Contains functions for calculating efficiencies, reshaping OCV data, and generating various plots (efficiencies, OCV, charge-discharge curves).
-*   `frames_to_volumes.py`:
-    *   Provides functions for image manipulation (rotate, grayscale, cut ROI, blur, threshold, edge/contour detection, bounding box drawing).
-    *   Includes `pipeline` and `process_image` functions for extracting liquid column heights from images.
-    *   Offers `process_all_images` to automate batch processing of images.
-*   `report_maker.ipynb`:
-    *   A Jupyter Notebook that likely orchestrates the usage of the parsing, processing, and visualization functions. This would be your main entry point for generating reports.
+Then register it in [core/parsers.py](core/parsers.py):
+
+```python
+PARSERS = {'Yarst': YarstParser, 'Elins': ElinsParser, 'MyLab': MyParser}
+```
+
+After that, `"potentiostat": "MyLab"` in `config.json` works in both the GUI and the example script. Everything downstream (metrics, efficiencies, plots, alignment) operates on `ExperStep` lists, so it needs no changes.
+
+### The optional sensors
+
+Steps 3–6 in the launcher are tied to our hardware. Skip them if you only have potentiostat data; post-processing works without them.
+
+| Step | Input | Tool |
+|---|---|---|
+| OCV log | YARST files from a second channel on an OCV cell | `YarstParser.export_ocv_data` |
+| Tank levels | Webcam JPEGs of both tanks | `gui/calibration_gui.py`: rotate, crop, threshold, then batch-measure liquid height in pixels |
+| Color + volume merge | Color sensor log + pixel heights | `core/series_data_converter.py` |
+| Alignment | Everything above + `cycles.csv` | `gui/alignment_gui.py`: sliders for each sensor's time offset |
+
+The sensors run on independent clocks, so alignment builds one master timeline from the potentiostat steps (plus rest periods) and shifts each sensor by a manually tuned offset.
+
+## Code layout
+
+```
+main_gui.py                  launcher: runs the steps in order, shows status
+core/                        library (no GUI code)
+  base_parser.py             ExperStep, BaseParser: coulomb counting, metrics, cycles.csv
+  parsers.py                 potentiostat registry — add new parsers here
+  yarst_parser.py            YARST format
+  elins_parser.py            Elins / ES8 format
+  post_processing.py         efficiencies and static plots
+  frames_to_volumes.py       OpenCV tank-level pipeline
+  series_data_converter.py   merge webcam volumes with color sensor data
+  align_cycles_data.py       master timeline + sensor interpolation
+gui/                         standalone tool windows (calibration, alignment, post-processing)
+examples/                    config template and a scripted pipeline
+```
+
+Each `core/*_parser.py`, `align_cycles_data.py` and `series_data_converter.py` also runs from the command line with an experiment folder argument, e.g. `python -m core.yarst_parser path/to/my_experiment`.
+
+## Authors
+
+Andrey Novikov, Nikita Buriak, Ilia Khristoforov (FlowBat team, Skoltech).

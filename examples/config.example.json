@@ -1,0 +1,24 @@
+{
+    "experiment_info": {
+        "id": "my_experiment_01",
+        "date": "06-10-2026",
+        "operator": "initials",
+        "description": "free text",
+        "potentiostat": "Yarst"
+    },
+    "cell_components": {
+        "membrane": { "name": "Nafion 212", "active_area_cm2": 4 },
+        "electrode": { "material": "Carbon felt", "thickness_mm": 3.5 }
+    },
+    "electrolyte": {
+        "concentration_M": 1.6,
+        "volume_ml": 50.0,
+        "electrons_transferred": 1
+    },
+    "experimental_conditions": {
+        "flow_rate_ml_min": 100.0
+    },
+    "plotting": {
+        "voltage_limits_V": [0.8, 1.65]
+    }
+}

@@ -12,6 +12,28 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import json
 
+FARADAY_C_PER_MOL = 96485.0
+
+
+def nominal_capacity_C(config: dict) -> float:
+    """
+    Theoretical electrolyte capacity from Faraday's law: Q = n * F * c * V.
+
+    Reads ``config['electrolyte']``: ``concentration_M`` and ``volume_ml`` are
+    required; ``electrons_transferred`` (n) is optional and defaults to 1
+    (vanadium). Set it for other chemistries, e.g. 2 for a two-electron organic.
+
+    Args:
+        config: Parsed config.json.
+
+    Returns:
+        Capacity in coulombs.
+    """
+    elec = config['electrolyte']
+    n = float(elec.get('electrons_transferred', 1))
+    volume_L = float(elec['volume_ml']) / 1000
+    return n * FARADAY_C_PER_MOL * float(elec['concentration_M']) * volume_L
+
 
 @dataclass
 class ExperStep:
@@ -41,7 +63,7 @@ class ExperStep:
             raise ValueError("unified_cycle_id and charge_discharge must be set before calling val_names")
 
         _name = f"{self.unified_cycle_id:03d}_{self.charge_discharge}"
-        return [f'{_name}_{s}' for s in ('t_s', 'U_V', 'I_A', 'Q_C')]
+        return [f'{_name}_{s}' for s in ('t_s', 'SoC', 'U_V', 'I_A', 'Q_C')]
 
 
 class BaseParser(ABC):
@@ -72,29 +94,33 @@ class BaseParser(ABC):
             self.config = json.load(file)
 
         self.data: list[ExperStep] = []
-        self.ctotal = self.config['electrolyte']['concentration_M']  # Molar concentration
-        self.volume = self.config['electrolyte']['volume_ml'] / 1000  # Volume in liters
 
     def calculate_nominal_capacity(self) -> tuple[float, float]:
         """
-        Calculates the nominal capacity of the electrolyte.
+        Calculates the nominal capacity of the electrolyte (see ``nominal_capacity_C``).
 
         Returns:
             tuple[float, float]: A tuple containing the nominal capacity in Coulombs and Ah.
         """
-        n = 1  # Number of electrons in the reaction
-        F = 96485  # Faraday constant
-        # self.ctotal and self.volume are already set in __init__
-
-        self.C_nom = n * F * self.ctotal * self.volume
+        self.C_nom = nominal_capacity_C(self.config)
         return self.C_nom, self.C_nom / 3600
 
     @abstractmethod
-    def read_data(self, *args, **kwargs) -> list[ExperStep]:
+    def read_data(self, raw_dir: pathlib.Path) -> list[ExperStep]:
         """
-        Abstract method to read raw experimental data. Must be implemented by subclasses.
+        Reads raw potentiostat files into a list of steps. Must be implemented by subclasses.
+
+        To support a new instrument, subclass BaseParser, implement this method so that
+        each charge/discharge/rest step becomes one ExperStep (t, U, I filled; Q may be
+        NaN — it is recomputed by coulomb counting in ``process_data``), store the result
+        in ``self.data`` and return it. Then register the class in ``core/parsers.py``.
+
+        Args:
+            raw_dir: Folder with the raw files (usually ``01_Raw_data/potentiostat``).
+
+        Returns:
+            list[ExperStep]: Parsed steps in chronological order.
         """
-        pass
 
     def process_data(
             self,
@@ -132,30 +158,33 @@ class BaseParser(ABC):
                 cycle_id, step_id = step.index
                 block_id = "N/A"  # Placeholder for YARST data
 
-            # Skip steps if all current measurements are zero
+            # Zero-current steps are rests: keep only the final voltage as the OCV
             if all(i == 0.0 for i in step.I):
-                print(f"Block {block_id}, Cycle {cycle_id}, Step {step_id} is skipped (I==0)")
-                print(f"Volume = {self.volume} L, Concentration = {self.ctotal} M")
                 OCV = float(step.U[-1])
-                print(f"OCV = {OCV} V")
+                print(f"Block {block_id}, Cycle {cycle_id}, Step {step_id}: rest (I==0), OCV = {OCV} V")
                 ocv_rows.append([step.unified_cycle_id, OCV])
                 continue
 
+            # Coulomb counting: cumulative Q = integral(I dt) via trapezoidal rule
             q_coulomb = 0.0
             voltage_sum = 0.0
             counter = 0
             for i, (t_val, U_val, I_val) in enumerate(zip(step.t, step.U, step.I)):
-                q_coulomb = t_val * I_val
+                if i == 0:
+                    step.Q[i] = 0.0
+                else:
+                    dt = t_val - step.t[i - 1]
+                    q_coulomb += 0.5 * (I_val + step.I[i - 1]) * dt
+                    step.Q[i] = q_coulomb
                 voltage_sum += U_val
                 counter = i + 1
-                step.Q[i] = q_coulomb
 
             if counter == 0:
                 # No data points - skip to stay safe
                 continue
 
             avg_voltage = voltage_sum / counter
-            capacity_mAh = q_coulomb / 3.6
+            capacity_mAh = abs(step.Q[-1]) / 3.6
             energy_mWh = avg_voltage * capacity_mAh
 
             data_upd.append(step)
@@ -190,12 +219,16 @@ class BaseParser(ABC):
 
         The data is grouped by unified cycle ID and charge/discharge status,
         and then written in a wide format where each column corresponds to a specific
-        measurement (time, voltage, current, charge) for a given cycle and step.
+        measurement (time, SoC, voltage, current, charge) for a given cycle and step.
+        SoC is computed from coulomb counting: charge / theoretical capacity.
 
         Args:
             data (list[ExperStep]): A list of ExperStep objects containing the processed data.
             file_out (pathlib.Path): The path to the output CSV file.
         """
+        self.calculate_nominal_capacity()
+        C_nom = self.C_nom
+
         col_names: list[str] = []
         data_len_max: int = 0
         grouped_data: dict[str, ExperStep] = {}
@@ -208,10 +241,12 @@ class BaseParser(ABC):
                     unified_cycle_id=step.unified_cycle_id,
                     charge_discharge=step.charge_discharge
                 )
-            grouped_data[group_key].t.extend(step.t)
+            t_offset = grouped_data[group_key].t[-1] if grouped_data[group_key].t else 0.0
+            grouped_data[group_key].t.extend(t + t_offset for t in step.t)
             grouped_data[group_key].U.extend(step.U)
             grouped_data[group_key].I.extend(step.I)
-            grouped_data[group_key].Q.extend(step.Q)
+            q_offset = grouped_data[group_key].Q[-1] if grouped_data[group_key].Q else 0.0
+            grouped_data[group_key].Q.extend(q + q_offset for q in step.Q)
 
         sorted_grouped_data = sorted(grouped_data.items(), key=lambda item: int(item[0].split('_')[0]))
 
@@ -219,6 +254,7 @@ class BaseParser(ABC):
             col_names.extend(combined_step.val_names())
             data_len_max = max(data_len_max, len(combined_step.t))
 
+        file_out.parent.mkdir(parents=True, exist_ok=True)
         with file_out.open('w', encoding='utf8', newline='') as f:
             csv_file = csv.DictWriter(f, fieldnames=col_names)
             csv_file.writeheader()
@@ -229,12 +265,16 @@ class BaseParser(ABC):
                     if n >= len(combined_step.t):
                         continue
 
+                    Q = combined_step.Q[n]
+                    SoC = abs(Q / C_nom)
+
                     _val_names = combined_step.val_names()
                     _vals = (
                         combined_step.t[n],
+                        SoC,
                         combined_step.U[n],
                         combined_step.I[n],
-                        combined_step.Q[n]
+                        Q
                     )
                     row.update(dict(zip(_val_names, _vals)))
 

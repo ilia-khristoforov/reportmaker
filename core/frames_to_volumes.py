@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Functions and pipeline for processing of the frames obtained
-from the webcam on VRFB experiment. As the output, user gets a
-CSV file with electrolyte level heights in pixels.
+Webcam frame pipeline for tracking electrolyte levels in the tanks:
+rotate -> grayscale -> crop ROI -> blur -> threshold -> edges -> contours -> bbox width.
+The output is a CSV of liquid column lengths in pixels for each tank.
+
+Parameters (angle, ROI, thresholds per tank) are easiest to find with
+gui/calibration_gui.py, which can also run the full batch.
 
 @author: Ilia Khristoforov
 """
 
 import cv2
-import os
 import csv
 import datetime
 import pathlib
@@ -43,20 +45,11 @@ def save_image(folder: pathlib.Path | str, name: str, img):
     Saves an image to a specified folder with a given name.
 
     Args:
-        folder (pathlib.Path | str): The target folder to save the image. If empty or a string,
-                                      saves to the current directory.
+        folder (pathlib.Path | str): The target folder; '' saves to the current directory.
         name (str): The filename for the saved image.
         img (numpy.ndarray): The image to save.
     """
-    if folder:
-        if isinstance(folder, str):
-            path = os.path.join(folder, name)
-        else:
-            path = folder / name
-    else:
-        path = name
-    cv2.imwrite(str(path), img)
-    print(f'{name} saved to {folder if folder else "current directory"}')
+    cv2.imwrite(str(pathlib.Path(folder) / name), img)
 
 def cut_roi(img, roi_coordinates):
     """
@@ -140,7 +133,12 @@ def find_pixel_length(contours):
 
     Returns:
         tuple: A tuple containing the bounding box (x, y, w, h) and its width (w).
+
+    Raises:
+        ValueError: If no contours were detected.
     """
+    if not contours:
+        raise ValueError("No contours detected")
     max_box = None
     max_width = 0
     for cnt in contours:
@@ -148,9 +146,7 @@ def find_pixel_length(contours):
         if w > max_width:
             max_width = w
             max_box = (x, y, w, h)
-    x, y, w, h = max_box
-    print(f"Liquid column length: {w} pixels")
-    return max_box, w
+    return max_box, max_width
 
 def draw_bbox(img, box, roi):
     """
@@ -238,11 +234,8 @@ def process_image(img_name: pathlib.Path, rois_: dict, output_folder: Optional[p
 
     # Save the final image to the output folder, preserving the original filename
     if output_folder:
-        os.makedirs(output_folder, exist_ok=True)
-        base_name = img_name.name
-        save_image(output_folder, base_name, final_img)
-    else:
-        save_image('', img_name.name, final_img)
+        output_folder.mkdir(parents=True, exist_ok=True)
+    save_image(output_folder or '', img_name.name, final_img)
     return lengths
 
 def get_unique_output_folder(base_folder: pathlib.Path) -> pathlib.Path:
@@ -293,47 +286,20 @@ def process_all_images(input_folder: pathlib.Path, output_folder: pathlib.Path, 
         writer = csv.writer(file)
         writer.writerow(["filename", "catholyte", "anolyte"])  # Headers
 
-        for filename in os.listdir(input_folder):
-            if filename.lower().endswith(('.jpg', '.jpeg')):
-                input_path = input_folder / filename
-                
-                # Process image
-                try:
-                    result = process_image(
-                        input_path, 
-                        rois_, 
-                        output_folder=unique_output_folder, 
-                        saving_steps=saving_steps, 
-                        steps_path=steps_path
-                    )  # Returns list
-
-                    # Write result to CSV
-                    writer.writerow([filename, result[0], result[1]])
-
-                except Exception as e:
-                    print(f"Error processing {filename}: {e}")
+        for input_path in sorted(input_folder.iterdir()):
+            if input_path.suffix.lower() not in ('.jpg', '.jpeg'):
+                continue
+            try:
+                result = process_image(
+                    input_path,
+                    rois_,
+                    output_folder=unique_output_folder,
+                    saving_steps=saving_steps,
+                    steps_path=steps_path
+                )
+                writer.writerow([input_path.name, result[0], result[1]])
+            except Exception as e:
+                print(f"Error processing {input_path.name}: {e}")
 
     print(f"Processing complete. Results saved in {unique_output_folder} and {results_file}")
 
-
-# --- User configuration ---
-
-folder = pathlib.Path('C:/MyFolder/origin docs/17.08/')
-
-STEPS_PATH = folder / 'steps'
-INPUT_FOLDER = folder / 'raw_'
-OUTPUT_FOLDER = folder / 'processed'
-RES_CSV = folder / 'pixel_heights.txt'
-
-rois = {
-    'catholyte': {'angle': -3.90, 'thresholds': (40,220), 'roi':(185, 538, 257, 278)},
-    'anolyte': {'angle': -7.20, 'thresholds': (40,100),'roi': (196, 581, 359, 382)}
-}
-
-process_all_images(INPUT_FOLDER, OUTPUT_FOLDER, RES_CSV, rois, saving_steps=False)
-
-# process_image('D:/SOC color sensor/imba   lances/imbalance_less_oxidation/17 Jun 16_06_04.jpg', rois, './', True, 'D:/SOC color sensor/imbalances/imbalance_less_oxidation/processed/steps')
-# img = cv2.imread('D:/SOC color sensor/imbalances/imbalance_less_oxidation/raw/18 Jun 03_27_17.jpg')
-# rotated = rotate(img, rois['catholyte']['angle'])
-# roi_img = cut_roi(rotated, rois['catholyte']['roi'])
-# save_image('', 'roi_img.jpg', roi_img)
